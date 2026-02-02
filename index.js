@@ -181,6 +181,77 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
+  // 3️⃣ /delete
+if (text === "/delete") {
+  let plan = lastPlans.get(chatId);
+
+  if (!plan || plan.length === 0) {
+    const userId = await getOrCreateUser(chatId);
+    const taskDate = getTomorrowDate();
+
+    plan = await getTasksForDate(userId, taskDate);
+
+    if (plan.length === 0) {
+      await sendMessage(chatId, "❌ No tasks to delete.");
+      return res.sendStatus(200);
+    }
+
+    lastPlans.set(chatId, plan);
+  }
+
+  let reply = "🗑️ Select task to delete:\n\n";
+  plan.forEach((t, i) => {
+    reply += `${i + 1}. ${t.task_time.slice(0,5)} — ${t.task_name}\n`;
+  });
+
+  reply += "\nReply with:\ndelete <number>\n\nExample:\ndelete 2";
+
+  await sendMessage(chatId, reply);
+  return res.sendStatus(200);
+}
+// 4️⃣ delete <number>
+if (text.startsWith("delete ")) {
+  const parts = text.split(" ");
+  const index = parseInt(parts[1], 10) - 1;
+
+  if (isNaN(index)) {
+    await sendMessage(chatId, "❌ Invalid delete format.\nUse: delete <number>");
+    return res.sendStatus(200);
+  }
+
+  let plan = lastPlans.get(chatId);
+
+  if (!plan || !plan[index]) {
+    const userId = await getOrCreateUser(chatId);
+    const taskDate = getTomorrowDate();
+
+    plan = await getTasksForDate(userId, taskDate);
+    lastPlans.set(chatId, plan);
+  }
+
+  if (!plan[index]) {
+    await sendMessage(chatId, "❌ Invalid task number. Use /delete again.");
+    return res.sendStatus(200);
+  }
+
+  const task = plan[index];
+
+  await pool.query(
+    "DELETE FROM tasks WHERE id = $1",
+    [task.id]
+  );
+
+  // remove from cache
+  plan.splice(index, 1);
+
+  await sendMessage(
+    chatId,
+    `✅ Deleted: ${task.task_time.slice(0,5)} — ${task.task_name}`
+  );
+
+  return res.sendStatus(200);
+}
+
   /* =======================
      4️⃣ Ignore other commands
   ======================= */
