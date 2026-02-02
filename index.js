@@ -253,6 +253,30 @@ if (text.startsWith("delete ")) {
 
   return res.sendStatus(200);
 }
+if (text.startsWith("doing ")) {
+  const response = text.replace("doing ", "").trim();
+
+  const userId = await getOrCreateUser(chatId);
+  const today = new Date().toISOString().split("T")[0];
+  const nowTime = new Date().toTimeString().slice(0, 5);
+
+  await pool.query(
+    `
+    UPDATE tasks
+    SET user_response = $1,
+        responded_at = NOW()
+    WHERE user_id = $2
+      AND task_date = $3
+      AND task_time >= $4
+    ORDER BY task_time ASC
+    LIMIT 1
+    `,
+    [response, userId, today, nowTime]
+  );
+
+  await sendMessage(chatId, "✍️ Noted.");
+  return res.sendStatus(200);
+}
 
   /* =======================
      4️⃣ Ignore other commands
@@ -380,6 +404,42 @@ app.post("/cron/task-reminders", async (req, res) => {
     res.json({ ok: true, checked: result.rowCount });
   } catch (err) {
     console.error("Task reminder error:", err);
+    res.status(500).json({ ok: false });
+  }
+});
+app.post("/cron/angry-check", async (req, res) => {
+  if (req.headers["x-cron-secret"] !== CRON_SECRET) {
+    return res.sendStatus(401);
+  }
+
+  try {
+    const now = new Date();
+    const date = now.toISOString().split("T")[0];
+    const time = now.toTimeString().slice(0, 5);
+
+    const result = await pool.query(
+      `
+      SELECT t.task_name, t.user_response, u.chat_id
+      FROM tasks t
+      JOIN users u ON u.id = t.user_id
+      WHERE t.task_date = $1
+        AND t.task_time = $2
+      `,
+      [date, time]
+    );
+
+    for (const row of result.rows) {
+      if (!row.user_response) {
+        await sendMessage(
+          row.chat_id,
+          `😡 You planned "${row.task_name}" right now.\n\nNo response.\nStop wasting time and do the work.`
+        );
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Angry cron error:", err);
     res.status(500).json({ ok: false });
   }
 });
