@@ -1,0 +1,15 @@
+name: Task Time Reminders
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes
+  workflow_dispatch:
+
+jobs:
+  check-tasks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call task reminder cron
+        run: |
+          curl -X POST https://prathamstrictbot.onrender.com/cron/task-reminders \
+          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"

@@ -339,6 +339,50 @@ app.post("/cron/morning-start", async (req, res) => {
     res.status(500).json({ ok: false });
   }
 });
+app.post("/cron/task-reminders", async (req, res) => {
+  if (req.headers["x-cron-secret"] !== CRON_SECRET) {
+    return res.sendStatus(401);
+  }
+
+  try {
+    const now = new Date();
+
+    // current time + 15 minutes
+    const reminderTime = new Date(now.getTime() + 15 * 60 * 1000);
+
+    const date = now.toISOString().split("T")[0];
+    const time = reminderTime.toTimeString().slice(0, 5); // HH:MM
+
+    const result = await pool.query(
+      `
+      SELECT t.id, t.task_time, t.task_name, u.chat_id
+      FROM tasks t
+      JOIN users u ON u.id = t.user_id
+      WHERE t.task_date = $1
+        AND t.task_time = $2
+        AND t.reminder_sent = false
+      `,
+      [date, time]
+    );
+
+    for (const row of result.rows) {
+      await sendMessage(
+        row.chat_id,
+        `⏰ Reminder\n\nAt ${row.task_time} you planned:\n${row.task_name}\n\nWhat are you doing right now?`
+      );
+
+      await pool.query(
+        "UPDATE tasks SET reminder_sent = true WHERE id = $1",
+        [row.id]
+      );
+    }
+
+    res.json({ ok: true, checked: result.rowCount });
+  } catch (err) {
+    console.error("Task reminder error:", err);
+    res.status(500).json({ ok: false });
+  }
+});
 
 app.get("/", (_, res) => res.send("Bot is running"));
 
