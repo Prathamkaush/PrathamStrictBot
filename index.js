@@ -7,6 +7,8 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+const CRON_SECRET = process.env.CRON_SECRET;
+
 async function getOrCreateUser(chatId) {
   const result = await pool.query(
     "SELECT id FROM users WHERE chat_id = $1",
@@ -292,6 +294,51 @@ if (text.startsWith("delete ")) {
   res.sendStatus(200);
 });
 
+app.post("/cron/plan-reminder", async (req, res) => {
+  if (req.headers["x-cron-secret"] !== CRON_SECRET) {
+    return res.sendStatus(401);
+  }
+  try {
+    const result = await pool.query(
+      "SELECT chat_id FROM users"
+    );
+
+    for (const row of result.rows) {
+      await sendMessage(
+        row.chat_id,
+        "📌 Plan tomorrow’s tasks.\n\nReply like:\n07:00 Gym\n10:00 Study Go"
+      );
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Cron error:", err);
+    res.status(500).json({ ok: false });
+  }
+});
+app.post("/cron/morning-start", async (req, res) => {
+  if (req.headers["x-cron-secret"] !== CRON_SECRET) {
+    return res.sendStatus(401);
+  }
+
+  try {
+    const result = await pool.query(
+      "SELECT chat_id FROM users"
+    );
+
+    for (const row of result.rows) {
+      await sendMessage(
+        row.chat_id,
+        "🌅 Good morning.\n\nCheck today’s plan using /plan\nStay disciplined."
+      );
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Morning cron error:", err);
+    res.status(500).json({ ok: false });
+  }
+});
 
 app.get("/", (_, res) => res.send("Bot is running"));
 
