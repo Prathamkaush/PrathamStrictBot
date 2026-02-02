@@ -44,7 +44,7 @@ function parseTasks(text) {
 
 async function getTasksForDate(userId, date) {
   const result = await pool.query(
-    `SELECT task_time, task_name, status
+    `SELECT id, task_time, task_name, status
      FROM tasks
      WHERE user_id = $1 AND task_date = $2
      ORDER BY task_time ASC`,
@@ -54,6 +54,8 @@ async function getTasksForDate(userId, date) {
   return result.rows;
 }
 
+const lastPlans = new Map();
+
 app.post("/webhook", async (req, res) => {
   const message = req.body.message;
   if (!message || !message.text) return res.sendStatus(200);
@@ -61,7 +63,7 @@ app.post("/webhook", async (req, res) => {
   const chatId = message.chat.id.toString();
   const text = message.text.trim();
 
-  // 1️⃣ Handle commands FIRST
+  // 1️⃣ /plan
   if (text === "/plan") {
     const userId = await getOrCreateUser(chatId);
 
@@ -76,23 +78,80 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
+    lastPlans.set(chatId, tasks);
+
     let reply = `📅 Plan for ${taskDate}\n\n`;
-    for (const t of tasks) {
-      reply += `${t.task_time.slice(0, 5)} — ${t.task_name}\n`;
-    }
+    tasks.forEach((t, i) => {
+      reply += `${i + 1}. ${t.task_time.slice(0, 5)} — ${t.task_name}\n`;
+    });
 
     await sendMessage(chatId, reply);
     return res.sendStatus(200);
   }
 
-  // 2️⃣ Ignore other slash commands
+  // 2️⃣ /edit
+  if (text === "/edit") {
+    const plan = lastPlans.get(chatId);
+
+    if (!plan || plan.length === 0) {
+      await sendMessage(chatId, "❌ No active plan. Use /plan first.");
+      return res.sendStatus(200);
+    }
+
+    await sendMessage(
+      chatId,
+      "✏️ Reply like:\nedit <number> <new time> <new task>\n\nExample:\nedit 2 11:00 Study Go"
+    );
+    return res.sendStatus(200);
+  }
+
+  // 3️⃣ edit <n> <time> <task>
+  if (text.startsWith("edit ")) {
+    const parts = text.split(" ");
+    if (parts.length < 4) {
+      await sendMessage(chatId, "❌ Invalid edit format.");
+      return res.sendStatus(200);
+    }
+
+    const index = parseInt(parts[1], 10) - 1;
+    const time = parts[2];
+    const name = parts.slice(3).join(" ");
+
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(time)) {
+      await sendMessage(chatId, "❌ Invalid time format (HH:MM).");
+      return res.sendStatus(200);
+    }
+
+    const plan = lastPlans.get(chatId);
+    if (!plan || !plan[index]) {
+      await sendMessage(chatId, "❌ Invalid task number. Use /plan again.");
+      return res.sendStatus(200);
+    }
+
+    const task = plan[index];
+
+    await pool.query(
+      `UPDATE tasks
+       SET task_time = $1, task_name = $2
+       WHERE id = $3`,
+      [time, name, task.id]
+    );
+
+    await sendMessage(
+      chatId,
+      `✅ Task updated:\n${task.task_time.slice(0,5)} ${task.task_name} → ${time} ${name}`
+    );
+
+    return res.sendStatus(200);
+  }
+
+  // 4️⃣ Ignore other slash commands
   if (text.startsWith("/")) {
     return res.sendStatus(200);
   }
 
-  // 3️⃣ Parse tasks
+  // 5️⃣ Parse & save tasks
   const tasks = parseTasks(text);
-
   if (tasks.length === 0) {
     await sendMessage(
       chatId,
@@ -101,9 +160,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  // 4️⃣ Save tasks
   const userId = await getOrCreateUser(chatId);
-
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const taskDate = tomorrow.toISOString().split("T")[0];
@@ -123,7 +180,6 @@ app.post("/webhook", async (req, res) => {
 
   res.sendStatus(200);
 });
-
 
 app.get("/", (_, res) => res.send("Bot is running"));
 
