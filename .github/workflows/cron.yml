@@ -1,0 +1,24 @@
+name: Telegram Cron Jobs
+
+on:
+  schedule:
+    - cron: "25 16 * * *"  # 09:55 PM IST
+    - cron: "25 23 * * *"  # 04:55 AM IST
+  workflow_dispatch:
+
+jobs:
+  night-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call night plan reminder
+        run: |
+          curl -X POST https://prathamstrictbot.onrender.com/cron/plan-reminder \
+          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
+
+  morning-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call morning start
+        run: |
+          curl -X POST https://prathamstrictbot.onrender.com/cron/morning-start \
+          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
