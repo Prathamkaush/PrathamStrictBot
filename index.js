@@ -56,20 +56,30 @@ async function getTasksForDate(userId, date) {
 
 const lastPlans = new Map();
 
+function getTomorrowDate() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().split("T")[0];
+}
+
+function normalizeCommand(text) {
+  return text.split("@")[0];
+}
+
 app.post("/webhook", async (req, res) => {
   const message = req.body.message;
   if (!message || !message.text) return res.sendStatus(200);
 
   const chatId = message.chat.id.toString();
-  const text = message.text.trim();
+  const rawText = message.text.trim();
+  const text = normalizeCommand(rawText);
 
-  // 1️⃣ /plan
+  /* =======================
+     1️⃣ /plan
+  ======================= */
   if (text === "/plan") {
     const userId = await getOrCreateUser(chatId);
-
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const taskDate = tomorrow.toISOString().split("T")[0];
+    const taskDate = getTomorrowDate();
 
     const tasks = await getTasksForDate(userId, taskDate);
 
@@ -89,13 +99,24 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  // 2️⃣ /edit
+  /* =======================
+     2️⃣ /edit
+  ======================= */
   if (text === "/edit") {
-    const plan = lastPlans.get(chatId);
+    let plan = lastPlans.get(chatId);
 
     if (!plan || plan.length === 0) {
-      await sendMessage(chatId, "❌ No active plan. Use /plan first.");
-      return res.sendStatus(200);
+      const userId = await getOrCreateUser(chatId);
+      const taskDate = getTomorrowDate();
+
+      plan = await getTasksForDate(userId, taskDate);
+
+      if (plan.length === 0) {
+        await sendMessage(chatId, "❌ No tasks found. Use /plan first.");
+        return res.sendStatus(200);
+      }
+
+      lastPlans.set(chatId, plan);
     }
 
     await sendMessage(
@@ -105,7 +126,9 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  // 3️⃣ edit <n> <time> <task>
+  /* =======================
+     3️⃣ edit <n> <time> <task>
+  ======================= */
   if (text.startsWith("edit ")) {
     const parts = text.split(" ");
     if (parts.length < 4) {
@@ -122,8 +145,17 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    const plan = lastPlans.get(chatId);
+    let plan = lastPlans.get(chatId);
+
     if (!plan || !plan[index]) {
+      const userId = await getOrCreateUser(chatId);
+      const taskDate = getTomorrowDate();
+
+      plan = await getTasksForDate(userId, taskDate);
+      lastPlans.set(chatId, plan);
+    }
+
+    if (!plan[index]) {
       await sendMessage(chatId, "❌ Invalid task number. Use /plan again.");
       return res.sendStatus(200);
     }
@@ -137,20 +169,28 @@ app.post("/webhook", async (req, res) => {
       [time, name, task.id]
     );
 
+    // ✅ update cache
+    task.task_time = time;
+    task.task_name = name;
+
     await sendMessage(
       chatId,
-      `✅ Task updated:\n${task.task_time.slice(0,5)} ${task.task_name} → ${time} ${name}`
+      `✅ Task updated:\n${task.task_time.slice(0, 5)} ${task.task_name}`
     );
 
     return res.sendStatus(200);
   }
 
-  // 4️⃣ Ignore other slash commands
+  /* =======================
+     4️⃣ Ignore other commands
+  ======================= */
   if (text.startsWith("/")) {
     return res.sendStatus(200);
   }
 
-  // 5️⃣ Parse & save tasks
+  /* =======================
+     5️⃣ Parse & save tasks
+  ======================= */
   const tasks = parseTasks(text);
   if (tasks.length === 0) {
     await sendMessage(
@@ -161,9 +201,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   const userId = await getOrCreateUser(chatId);
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const taskDate = tomorrow.toISOString().split("T")[0];
+  const taskDate = getTomorrowDate();
 
   for (const task of tasks) {
     await pool.query(
@@ -173,6 +211,8 @@ app.post("/webhook", async (req, res) => {
     );
   }
 
+  lastPlans.delete(chatId); // reset cache
+
   await sendMessage(
     chatId,
     `✅ Saved ${tasks.length} tasks for ${taskDate}`
@@ -180,6 +220,7 @@ app.post("/webhook", async (req, res) => {
 
   res.sendStatus(200);
 });
+
 
 app.get("/", (_, res) => res.send("Bot is running"));
 
