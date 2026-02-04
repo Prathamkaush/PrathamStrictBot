@@ -9,6 +9,9 @@ app.use(express.json());
 
 const CRON_SECRET = process.env.CRON_SECRET;
 
+//--------------
+//Middleware 
+//--------------
 async function getOrCreateUser(chatId) {
   const result = await pool.query(
     "SELECT id FROM users WHERE chat_id = $1",
@@ -67,7 +70,9 @@ function getTomorrowDate() {
 function normalizeCommand(text) {
   return text.split("@")[0];
 }
-
+//--------------
+//All logic stays here
+//--------------
 app.post("/webhook", async (req, res) => {
   const message = req.body.message;
   if (!message || !message.text) return res.sendStatus(200);
@@ -318,6 +323,9 @@ if (text.startsWith("doing ")) {
   res.sendStatus(200);
 });
 
+//--------------
+//Plan reminder at 10 pm 
+//--------------
 app.post("/cron/plan-reminder", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) {
     return res.sendStatus(401);
@@ -363,6 +371,11 @@ app.post("/cron/morning-start", async (req, res) => {
     res.status(500).json({ ok: false });
   }
 });
+
+//--------------
+//task reminder cron job every 5 min
+//--------------
+
 app.post("/cron/task-reminders", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) {
     return res.sendStatus(401);
@@ -407,6 +420,10 @@ app.post("/cron/task-reminders", async (req, res) => {
     res.status(500).json({ ok: false });
   }
 });
+
+//--------------
+//Behaviuor check
+//--------------
 app.post("/cron/angry-check", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) {
     return res.sendStatus(401);
@@ -460,6 +477,90 @@ app.post("/cron/angry-check", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error("Discipline cron error:", err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+//--------------
+//daily summery
+//--------------
+app.post("/cron/daily-summary", async (req, res) => {
+  if (req.headers["x-cron-secret"] !== CRON_SECRET) {
+    return res.sendStatus(401);
+  }
+
+  try {
+    const today = new Date().toISOString().split("T")[0];
+
+    const result = await pool.query(`
+      SELECT
+        u.chat_id,
+        COUNT(t.id) AS planned,
+        COUNT(*) FILTER (WHERE t.praised = true) AS completed,
+        COUNT(*) FILTER (WHERE t.praised = false) AS missed,
+        ARRAY_AGG(t.task_name) FILTER (WHERE t.praised = false) AS missed_tasks
+      FROM tasks t
+      JOIN users u ON u.id = t.user_id
+      WHERE t.task_date = $1
+      GROUP BY u.chat_id
+    `, [today]);
+
+    for (const row of result.rows) {
+      const missedList = (row.missed_tasks || [])
+        .slice(0, 3)
+        .join(", ");
+
+      let message =
+`📊 Daily Summary
+
+Planned: ${row.planned}
+Completed: ${row.completed}
+Missed: ${row.missed}`;
+
+      if (row.missed > 0) {
+        message += `
+
+⚠️ Missed:
+${missedList}`;
+      }
+
+      message += `
+
+Reset tonight. Tomorrow is another chance.`;
+
+      await sendMessage(row.chat_id, message);
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Daily summary error:", err);
+    res.status(500).json({ ok: false });
+  }
+});
+
+//--------------
+//daily reset at 11 pm 
+//--------------
+app.post("/cron/daily-reset", async (req, res) => {
+  if (req.headers["x-cron-secret"] !== CRON_SECRET) {
+    return res.sendStatus(401);
+  }
+
+  try {
+    await pool.query(`
+      UPDATE tasks
+      SET
+        reminder_sent = false,
+        praised = false,
+        scolded = false,
+        user_response = NULL,
+        responded_at = NULL
+      WHERE task_date < CURRENT_DATE
+    `);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Daily reset error:", err);
     res.status(500).json({ ok: false });
   }
 });

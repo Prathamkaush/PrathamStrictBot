@@ -1,0 +1,15 @@
+name: Daily Task Reset
+
+on:
+  schedule:
+    - cron: "29 18 * * *"  # 11:59 PM IST
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reset daily task state
+        run: |
+          curl -X POST https://prathamstrictbot.onrender.com/cron/daily-reset \
+          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
