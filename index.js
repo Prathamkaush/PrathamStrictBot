@@ -419,27 +419,47 @@ app.post("/cron/angry-check", async (req, res) => {
 
     const result = await pool.query(
       `
-      SELECT t.task_name, t.user_response, u.chat_id
+      SELECT t.id, t.task_name, t.user_response, t.praised, u.chat_id
       FROM tasks t
       JOIN users u ON u.id = t.user_id
       WHERE t.task_date = $1
         AND t.task_time = $2
+        AND t.praised = false
       `,
       [date, time]
     );
 
     for (const row of result.rows) {
-      if (!row.user_response) {
+      const response = (row.user_response || "").toLowerCase();
+      const taskWords = row.task_name.toLowerCase().split(" ");
+
+      const isDoingTask = taskWords.some(word =>
+        response.includes(word)
+      );
+
+      if (row.user_response && isDoingTask) {
+        // 😌 PRAISE
         await sendMessage(
           row.chat_id,
-          `😡 You planned "${row.task_name}" right now.\n\nNo response.\nStop wasting time and do the work.`
+          `😌 Good.\n\nYou planned "${row.task_name}" and you’re doing it.\nKeep going.`
+        );
+
+        await pool.query(
+          "UPDATE tasks SET praised = true WHERE id = $1",
+          [row.id]
+        );
+      } else {
+        // 😡 ANGRY
+        await sendMessage(
+          row.chat_id,
+          `😡 You planned "${row.task_name}" right now.\n\nDiscipline means doing what you said you would.\nFix it.`
         );
       }
     }
 
     res.json({ ok: true });
   } catch (err) {
-    console.error("Angry cron error:", err);
+    console.error("Discipline cron error:", err);
     res.status(500).json({ ok: false });
   }
 });
