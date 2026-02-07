@@ -70,6 +70,12 @@ function getTomorrowDate() {
 function normalizeCommand(text) {
   return text.split("@")[0];
 }
+
+function isSuccessfulDay(planned, completed) {
+  if (planned === 0) return false;
+  return completed / planned >= 0.7;
+}
+
 //--------------
 //All logic stays here
 //--------------
@@ -506,30 +512,91 @@ app.post("/cron/daily-summary", async (req, res) => {
     `, [today]);
 
     for (const row of result.rows) {
-      const missedList = (row.missed_tasks || [])
-        .slice(0, 3)
-        .join(", ");
+  const planned = Number(row.planned);
+  const completed = Number(row.completed);
+  const missed = planned - completed;
 
-      let message =
+  const success = isSuccessfulDay(planned, completed);
+
+  // get user_id
+  const userResult = await pool.query(
+    "SELECT id FROM users WHERE chat_id = $1",
+    [row.chat_id]
+  );
+  const userId = userResult.rows[0].id;
+
+  // fetch streak
+  const statsResult = await pool.query(
+    "SELECT current_streak, longest_streak, last_success_date FROM user_stats WHERE user_id = $1",
+    [userId]
+  );
+
+  let currentStreak = 0;
+  let longestStreak = 0;
+  let lastDate = null;
+
+  if (statsResult.rows.length > 0) {
+    ({ current_streak: currentStreak, longest_streak: longestStreak, last_success_date: lastDate } = statsResult.rows[0]);
+  }
+
+  const today = new Date().toISOString().split("T")[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+
+  if (success) {
+    if (lastDate === yesterday) {
+      currentStreak += 1;
+    } else {
+      currentStreak = 1;
+    }
+
+    longestStreak = Math.max(longestStreak, currentStreak);
+
+    await pool.query(
+      `
+      INSERT INTO user_stats (user_id, current_streak, longest_streak, last_success_date)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        current_streak = $2,
+        longest_streak = $3,
+        last_success_date = $4
+      `,
+      [userId, currentStreak, longestStreak, today]
+    );
+  } else {
+    await pool.query(
+      `
+      UPDATE user_stats
+      SET current_streak = 0
+      WHERE user_id = $1
+      `,
+      [userId]
+    );
+  }
+
+  // 🧾 summary message
+  let message =
 `📊 Daily Summary
 
-Planned: ${row.planned}
-Completed: ${row.completed}
-Missed: ${row.missed}`;
+Planned: ${planned}
+Completed: ${completed}
+Missed: ${missed}`;
 
-      if (row.missed > 0) {
-        message += `
+  if (success) {
+    message += `
 
-⚠️ Missed:
-${missedList}`;
-      }
+🔥 Streak: ${currentStreak} day(s)
+Keep it alive.`;
+  } else {
+    message += `
 
-      message += `
+❌ Streak broken.
+Discipline resets tomorrow.`;
+  }
 
-Reset tonight. Tomorrow is another chance.`;
+  await sendMessage(row.chat_id, message);
+}
 
-      await sendMessage(row.chat_id, message);
-    }
 
     res.json({ ok: true });
   } catch (err) {
