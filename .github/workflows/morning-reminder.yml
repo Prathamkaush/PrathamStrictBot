@@ -2,7 +2,7 @@ name: Telegram Morning Reminder
 
 on:
   schedule:
-    - cron: "25 23 * * *"  # 04:55 AM IST
+    - cron: "25 23 * * *"   # 23:25 UTC = 04:55 AM IST
   workflow_dispatch:
 
 jobs:

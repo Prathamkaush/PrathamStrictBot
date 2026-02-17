@@ -2,7 +2,7 @@ name: Telegram Night Reminder
 
 on:
   schedule:
-    - cron: "25 16 * * *"  # 09:55 PM IST
+    - cron: "30 16 * * *"  # 16:30 UTC = 10:00 PM IST
   workflow_dispatch:
 
 jobs:

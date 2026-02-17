@@ -2,7 +2,7 @@ name: Daily Discipline Summary
 
 on:
   schedule:
-    - cron: "0 17 * * *"  # 10:30 PM IST
+    - cron: "30 17 * * *"  # 17:30 UTC = 11:00 PM IST
   workflow_dispatch:
 
 jobs:
