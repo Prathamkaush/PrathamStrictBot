@@ -30,9 +30,9 @@ function getUserDate(timezoneOffset = 0) {
 
 function getUserTime(timezoneOffset = 0) {
   const now = new Date();
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const userTime = new Date(utc + (timezoneOffset * 60000));
-  return userTime.toTimeString().slice(0, 5);
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+  const userTime = new Date(utcMs + timezoneOffset * 60000);
+  return userTime.toISOString().slice(11, 16); // HH:MM
 }
 
 function getUserMinutes(timezoneOffset = 0) {
@@ -41,8 +41,9 @@ function getUserMinutes(timezoneOffset = 0) {
   return h * 60 + m;
 }
 
-function getTodayDate() {
-  return new Date().toISOString().split("T")[0];
+function getTodayDate(timezoneOffset = 0) {
+  // FIXED: This is same as getUserDate, just consistent naming
+  return getUserDate(timezoneOffset);
 }
 
 function getDatePlusDays(baseDate, days) {
@@ -55,7 +56,6 @@ function getUserTomorrowDate(timezoneOffset = 0) {
   return getDatePlusDays(getUserDate(timezoneOffset), 1);
 }
 
-// After 6 PM user time: plan for tomorrow. Before 6 PM: plan for today.
 function getActiveDate(timezoneOffset = 0) {
   const userMinutes = getUserMinutes(timezoneOffset);
   if (userMinutes >= 18 * 60) {
@@ -99,7 +99,7 @@ async function getTasksForDate(userId, date) {
   return result.rows;
 }
 
-const lastPlans = new Map(); // chatId -> { date, tasks }
+const lastPlans = new Map();
 
 function normalizeCommand(text) { return text.split("@")[0]; }
 
@@ -108,8 +108,9 @@ function isSuccessfulDay(planned, completed) {
   return completed / planned >= 0.7;
 }
 
-async function checkStuckRateLimit(userId) {
-  const today = getTodayDate();
+async function checkStuckRateLimit(userId, timezoneOffset) {
+  // FIXED: Pass timezone to getTodayDate
+  const today = getTodayDate(timezoneOffset);
   const result = await pool.query(
     `SELECT stuck_count, stuck_reset_date FROM users WHERE id = $1`, [userId]
   );
@@ -125,8 +126,9 @@ async function checkStuckRateLimit(userId) {
   return true;
 }
 
-async function reserveAIQuota(userId) {
-  const today = getTodayDate();
+async function reserveAIQuota(userId, timezoneOffset) {
+  // FIXED: Pass timezone to getTodayDate
+  const today = getTodayDate(timezoneOffset);
   const result = await pool.query(
     `UPDATE users
      SET ai_calls_today = CASE
@@ -148,11 +150,9 @@ async function rollbackAIQuota(userId) {
   );
 }
 
-// Check if a once-per-day event already fired today for this user
-async function alreadySentToday(userId, eventType) {
-  const userDate = getUserDate(
-    (await pool.query(`SELECT timezone_offset FROM users WHERE id = $1`, [userId])).rows[0]?.timezone_offset || 0
-  );
+async function alreadySentToday(userId, eventType, timezoneOffset) {
+  // FIXED: Pass timezone as parameter instead of querying
+  const userDate = getUserDate(timezoneOffset);
   const check = await pool.query(
     `SELECT 1 FROM user_events WHERE user_id = $1 AND event_type = $2 AND event_date = $3`,
     [userId, eventType, userDate]
@@ -176,20 +176,24 @@ app.post("/webhook", async (req, res) => {
   if (!message || !message.text) return res.sendStatus(200);
 
   const chatId = message.chat.id.toString();
-  const text = normalizeCommand(message.text.trim());
+  // FIXED: Don't lowercase the entire text, only the command
+  const rawText = message.text.trim();
+  const text = normalizeCommand(rawText);
 
-  if (text.startsWith("/stuck")) {
-    const problem = text.replace("/stuck", "").trim();
+  if (text.toLowerCase().startsWith("/stuck")) {
+    const problem = text.slice(6).trim(); // FIXED: preserve case for user input
     if (!problem) {
       await sendMessage(chatId, "❓ Tell me what you're stuck with.\n\nExample:\n/stuck can't focus on work");
       return res.sendStatus(200);
     }
     const user = await getOrCreateUser(chatId);
-    if (!(await checkStuckRateLimit(user.id))) {
+    // FIXED: Pass timezone to checkStuckRateLimit
+    if (!(await checkStuckRateLimit(user.id, user.timezone_offset))) {
       await sendMessage(chatId, "⏱️ Too many requests. Try again tomorrow.");
       return res.sendStatus(200);
     }
-    if (!(await reserveAIQuota(user.id))) {
+    // FIXED: Pass timezone to reserveAIQuota
+    if (!(await reserveAIQuota(user.id, user.timezone_offset))) {
       await sendMessage(chatId, "🚫 Daily AI limit reached. Try again tomorrow.");
       return res.sendStatus(200);
     }
@@ -204,8 +208,8 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text.startsWith("/timezone")) {
-    const offsetStr = text.replace("/timezone", "").trim();
+  if (text.toLowerCase().startsWith("/timezone")) {
+    const offsetStr = text.slice(9).trim();
     const offset = parseInt(offsetStr, 10);
     if (!offsetStr || isNaN(offset) || offset < -720 || offset > 840) {
       await sendMessage(chatId,
@@ -228,9 +232,27 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text === "/plan") {
+  // FIXED: Check lowercase for command matching
+  const lowerText = text.toLowerCase();
+
+  if (lowerText === "/plan" || lowerText === "/plan today" || lowerText === "/plan tomorrow") {
     const user = await getOrCreateUser(chatId);
-    const { date: taskDate, label } = getActiveDate(user.timezone_offset);
+
+    const useToday = lowerText.includes("today");
+    const useTomorrow = lowerText.includes("tomorrow");
+
+    let taskDate, label;
+
+    if (useToday) {
+      taskDate = getUserDate(user.timezone_offset);
+      label = "today";
+    } else if (useTomorrow) {
+      taskDate = getUserTomorrowDate(user.timezone_offset);
+      label = "tomorrow";
+    } else {
+      ({ date: taskDate, label } = getActiveDate(user.timezone_offset));
+    }
+
     const tasks = await getTasksForDate(user.id, taskDate);
     if (tasks.length === 0) {
       await sendMessage(chatId, `📭 No tasks planned for ${label}.`);
@@ -244,7 +266,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text === "/edit") {
+  if (lowerText === "/edit") {
     const user = await getOrCreateUser(chatId);
     const { date: taskDate } = getActiveDate(user.timezone_offset);
     let cached = lastPlans.get(chatId);
@@ -263,8 +285,8 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text.startsWith("edit ")) {
-    const parts = text.split(" ");
+  if (lowerText.startsWith("edit ")) {
+    const parts = text.split(" "); // FIXED: Use original case for task name
     if (parts.length < 4) { await sendMessage(chatId, "❌ Invalid edit format."); return res.sendStatus(200); }
     const index = parseInt(parts[1], 10) - 1;
     const time = parts[2];
@@ -290,7 +312,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text === "/delete") {
+  if (lowerText === "/delete") {
     const user = await getOrCreateUser(chatId);
     const { date: taskDate } = getActiveDate(user.timezone_offset);
     let cached = lastPlans.get(chatId);
@@ -307,7 +329,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text.startsWith("delete ")) {
+  if (lowerText.startsWith("delete ")) {
     const parts = text.split(" ");
     const index = parseInt(parts[1], 10) - 1;
     if (isNaN(index)) { await sendMessage(chatId, "❌ Invalid delete format.\nUse: delete <number>"); return res.sendStatus(200); }
@@ -327,18 +349,40 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text.startsWith("doing ")) {
-    const response = text.replace("doing ", "").trim();
+  if (lowerText.startsWith("/doing ") || lowerText.startsWith("doing ")) {
+    const response = lowerText.startsWith("/doing ")
+      ? text.slice(7).trim()  // FIXED: Use original case
+      : text.slice(6).trim();
+
+    if (!response) {
+      await sendMessage(chatId, "❓ Tell me what you're doing.\nExample: doing dog walk");
+      return res.sendStatus(200);
+    }
+
     const user = await getOrCreateUser(chatId);
     const userDate = getUserDate(user.timezone_offset);
     const nowTime = getUserTime(user.timezone_offset);
+
     const result = await pool.query(
-      `UPDATE tasks SET user_response = $1, responded_at = NOW()
-       WHERE user_id = $2 AND task_date = $3 AND task_time <= $4 AND user_response IS NULL
-       ORDER BY task_time DESC LIMIT 1 RETURNING id`,
+      `UPDATE tasks
+       SET user_response = $1, responded_at = NOW()
+       WHERE user_id = $2
+         AND task_date = $3
+         AND task_time <= $4
+         AND user_response IS NULL
+       ORDER BY task_time DESC
+       LIMIT 1
+       RETURNING id`,
       [response, user.id, userDate, nowTime]
     );
-    await sendMessage(chatId, result.rowCount === 0 ? "⚠️ No matching task found for this time." : "✍️ Noted.");
+
+    await sendMessage(
+      chatId,
+      result.rowCount === 0
+        ? "⚠️ No matching task found for this time."
+        : "✍️ Noted."
+    );
+
     return res.sendStatus(200);
   }
 
@@ -363,8 +407,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 //--------------
-// CRON: Morning (fires at 01:30 UTC = 07:00 IST via GitHub Actions)
-// NO hour-check. The schedule IS the trigger. Guard prevents workflow_dispatch double-send.
+// CRON: Morning
 //--------------
 app.post("/cron/morning-start", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -373,10 +416,12 @@ app.post("/cron/morning-start", async (req, res) => {
     for (const row of users.rows) {
       try {
         const userDate = getUserDate(row.timezone_offset);
-        if (await alreadySentToday(row.id, 'morning_start')) continue;
+        // FIXED: Pass timezone to alreadySentToday
+        if (await alreadySentToday(row.id, 'morning_start', row.timezone_offset)) continue;
         await markSentToday(row.id, 'morning_start', userDate);
         const tasks = await getTasksForDate(row.id, userDate);
-        if (!(await reserveAIQuota(row.id))) {
+        // FIXED: Pass timezone to reserveAIQuota
+        if (!(await reserveAIQuota(row.id, row.timezone_offset))) {
           await sendMessage(row.chat_id, `🌅 Good morning!\n\nYou have ${tasks.length} tasks today. Use /plan to see them.`);
           continue;
         }
@@ -394,7 +439,7 @@ app.post("/cron/morning-start", async (req, res) => {
 });
 
 //--------------
-// CRON: Plan reminder (fires at 16:30 UTC = 22:00 IST via GitHub Actions)
+// CRON: Plan reminder
 //--------------
 app.post("/cron/plan-reminder", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -403,9 +448,9 @@ app.post("/cron/plan-reminder", async (req, res) => {
     for (const row of users.rows) {
       try {
         const userDate = getUserDate(row.timezone_offset);
-        if (await alreadySentToday(row.id, 'plan_reminder')) continue;
+        if (await alreadySentToday(row.id, 'plan_reminder', row.timezone_offset)) continue;
         await markSentToday(row.id, 'plan_reminder', userDate);
-        if (!(await reserveAIQuota(row.id))) {
+        if (!(await reserveAIQuota(row.id, row.timezone_offset))) {
           await sendMessage(row.chat_id, "📌 Time to plan tomorrow!\n\nReply like:\n07:00 Gym\n10:00 Study Go");
           continue;
         }
@@ -423,8 +468,7 @@ app.post("/cron/plan-reminder", async (req, res) => {
 });
 
 //--------------
-// CRON: Task reminders (every 5 min)
-// Looks 8-22 min ahead. 14-min window > 5-min interval = every task caught.
+// CRON: Task reminders
 //--------------
 app.post("/cron/task-reminders", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -443,7 +487,7 @@ app.post("/cron/task-reminders", async (req, res) => {
                    BETWEEN $3 AND $4
              FOR UPDATE SKIP LOCKED
            ) RETURNING id, task_time, task_name`,
-          [user.id, userDate, userMinutes + 8, userMinutes + 22]
+          [user.id, userDate, userMinutes + 5, userMinutes + 20]
         );
         for (const task of result.rows) {
           await sendMessage(user.chat_id,
@@ -457,8 +501,7 @@ app.post("/cron/task-reminders", async (req, res) => {
 });
 
 //--------------
-// CRON: Angry/Praise check (every 5 min)
-// Checks tasks within ±7 min of current user time.
+// CRON: Angry/Praise check
 //--------------
 app.post("/cron/angry-check", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -481,7 +524,7 @@ app.post("/cron/angry-check", async (req, res) => {
             const response = (row.user_response || "").toLowerCase();
             const taskWords = row.task_name.toLowerCase().split(" ").filter(w => w.length > 2);
             const isDoingTask = taskWords.some(w => response.includes(w));
-            if (!(await reserveAIQuota(user.id))) {
+            if (!(await reserveAIQuota(user.id, user.timezone_offset))) {
               await pool.query("UPDATE tasks SET scolded = true WHERE id = $1", [row.id]);
               continue;
             }
@@ -511,7 +554,7 @@ app.post("/cron/angry-check", async (req, res) => {
 });
 
 //--------------
-// CRON: Daily summary (fires at 17:30 UTC = 23:00 IST via GitHub Actions)
+// CRON: Daily summary
 //--------------
 app.post("/cron/daily-summary", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -539,7 +582,7 @@ app.post("/cron/daily-summary", async (req, res) => {
           ({ current_streak: currentStreak, longest_streak: longestStreak,
              last_success_date: lastSuccessDate, last_summary_date: lastSummaryDate } = sr.rows[0]);
         }
-        if (lastSummaryDate === userDate) continue; // already sent today
+        if (lastSummaryDate === userDate) continue;
         const yesterday = getDatePlusDays(userDate, -1);
         if (success) {
           currentStreak = (lastSuccessDate === yesterday) ? currentStreak + 1 : 1;
@@ -559,7 +602,7 @@ app.post("/cron/daily-summary", async (req, res) => {
         }
         const base = `📊 Daily Summary\n\nPlanned: ${planned}\nCompleted: ${completed}\nMissed: ${missed}` +
           (success ? `\n\n🔥 Streak: ${currentStreak} day(s)` : `\n\n❌ Streak reset.`);
-        if (!(await reserveAIQuota(user.id))) {
+        if (!(await reserveAIQuota(user.id, user.timezone_offset))) {
           await sendMessage(user.chat_id, base); continue;
         }
         try {
@@ -576,7 +619,7 @@ app.post("/cron/daily-summary", async (req, res) => {
 });
 
 //--------------
-// CRON: Daily reset (fires at 18:29 UTC = 23:59 IST via GitHub Actions)
+// CRON: Daily reset
 //--------------
 app.post("/cron/daily-reset", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
