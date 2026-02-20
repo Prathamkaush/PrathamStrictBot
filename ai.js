@@ -5,45 +5,12 @@ const openai = new OpenAI({
 });
 
 /* =========================
-   TOKEN SAFETY (TEST PHASE)
-========================= */
-
-// Max tokens you allow per day (for YOU only)
-const DAILY_TOKEN_LIMIT = 10000;
-
-let tokensUsedToday = 0;
-let lastResetDate = new Date().toISOString().split("T")[0];
-
-function estimateTokens(systemPrompt, userPrompt, maxTokens = 150) {
-  const inputTokens =
-    Math.ceil(systemPrompt.length / 4) +
-    Math.ceil(userPrompt.length / 4);
-
-  return inputTokens + maxTokens;
-}
-
-function consumeTokens(tokens) {
-  const today = new Date().toISOString().split("T")[0];
-
-  if (today !== lastResetDate) {
-    tokensUsedToday = 0;
-    lastResetDate = today;
-  }
-
-  if (tokensUsedToday + tokens > DAILY_TOKEN_LIMIT) {
-    throw new Error("DAILY_TOKEN_LIMIT_EXCEEDED");
-  }
-
-  tokensUsedToday += tokens;
-}
-
-/* =========================
    Core AI helper
+   NOTE: Daily quota is managed in index.js via reserveAIQuota() (DB-backed).
+   The old in-memory token counter was removed because it resets on every
+   server restart/sleep (Render free tier restarts frequently), making it useless.
 ========================= */
 async function askAI(systemPrompt, userPrompt) {
-  const estimatedTokens = estimateTokens(systemPrompt, userPrompt);
-  consumeTokens(estimatedTokens);
-
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
@@ -102,7 +69,7 @@ export async function stuckHelp(problem) {
 ========================= */
 export async function morningMessage(todayTaskCount) {
   return askAI(
-    `You are a discipline coach starting the day.`,
+    `You are a discipline coach starting the day. Be energetic and motivating. Use 🌅 or ☀️. Keep it under 2 sentences.`,
     `User has ${todayTaskCount} tasks today.`
   );
 }
@@ -112,7 +79,7 @@ export async function morningMessage(todayTaskCount) {
 ========================= */
 export async function planningPrompt() {
   return askAI(
-    `You are a discipline coach at night.`,
+    `You are a discipline coach at night. Encourage the user to plan tomorrow so they wake up with purpose. Use 📌 or 🌙. Keep it under 2 sentences.`,
     `Remind user to plan tomorrow.`
   );
 }

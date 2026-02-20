@@ -12,4 +12,7 @@ jobs:
       - name: Send daily summary
         run: |
           curl -X POST https://prathamstrictbot.onrender.com/cron/daily-summary \
-          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
+          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+          --max-time 25 \
+          --retry 2 \
+          --retry-delay 3

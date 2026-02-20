@@ -41,11 +41,6 @@ function getUserMinutes(timezoneOffset = 0) {
   return h * 60 + m;
 }
 
-function getTodayDate(timezoneOffset = 0) {
-  // FIXED: This is same as getUserDate, just consistent naming
-  return getUserDate(timezoneOffset);
-}
-
 function getDatePlusDays(baseDate, days) {
   const d = new Date(baseDate);
   d.setDate(d.getDate() + days);
@@ -109,8 +104,7 @@ function isSuccessfulDay(planned, completed) {
 }
 
 async function checkStuckRateLimit(userId, timezoneOffset) {
-  // FIXED: Pass timezone to getTodayDate
-  const today = getTodayDate(timezoneOffset);
+  const today = getUserDate(timezoneOffset);
   const result = await pool.query(
     `SELECT stuck_count, stuck_reset_date FROM users WHERE id = $1`, [userId]
   );
@@ -127,8 +121,7 @@ async function checkStuckRateLimit(userId, timezoneOffset) {
 }
 
 async function reserveAIQuota(userId, timezoneOffset) {
-  // FIXED: Pass timezone to getTodayDate
-  const today = getTodayDate(timezoneOffset);
+  const today = getUserDate(timezoneOffset);
   const result = await pool.query(
     `UPDATE users
      SET ai_calls_today = CASE
@@ -151,7 +144,6 @@ async function rollbackAIQuota(userId) {
 }
 
 async function alreadySentToday(userId, eventType, timezoneOffset) {
-  // FIXED: Pass timezone as parameter instead of querying
   const userDate = getUserDate(timezoneOffset);
   const check = await pool.query(
     `SELECT 1 FROM user_events WHERE user_id = $1 AND event_type = $2 AND event_date = $3`,
@@ -176,23 +168,22 @@ app.post("/webhook", async (req, res) => {
   if (!message || !message.text) return res.sendStatus(200);
 
   const chatId = message.chat.id.toString();
-  // FIXED: Don't lowercase the entire text, only the command
   const rawText = message.text.trim();
   const text = normalizeCommand(rawText);
+  const lowerText = text.toLowerCase();
 
-  if (text.toLowerCase().startsWith("/stuck")) {
-    const problem = text.slice(6).trim(); // FIXED: preserve case for user input
+  // /stuck
+  if (lowerText.startsWith("/stuck")) {
+    const problem = text.slice(6).trim();
     if (!problem) {
       await sendMessage(chatId, "❓ Tell me what you're stuck with.\n\nExample:\n/stuck can't focus on work");
       return res.sendStatus(200);
     }
     const user = await getOrCreateUser(chatId);
-    // FIXED: Pass timezone to checkStuckRateLimit
     if (!(await checkStuckRateLimit(user.id, user.timezone_offset))) {
       await sendMessage(chatId, "⏱️ Too many requests. Try again tomorrow.");
       return res.sendStatus(200);
     }
-    // FIXED: Pass timezone to reserveAIQuota
     if (!(await reserveAIQuota(user.id, user.timezone_offset))) {
       await sendMessage(chatId, "🚫 Daily AI limit reached. Try again tomorrow.");
       return res.sendStatus(200);
@@ -208,7 +199,8 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (text.toLowerCase().startsWith("/timezone")) {
+  // /timezone
+  if (lowerText.startsWith("/timezone")) {
     const offsetStr = text.slice(9).trim();
     const offset = parseInt(offsetStr, 10);
     if (!offsetStr || isNaN(offset) || offset < -720 || offset > 840) {
@@ -232,27 +224,19 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  // FIXED: Check lowercase for command matching
-  const lowerText = text.toLowerCase();
-
+  // /plan, /plan today, /plan tomorrow
   if (lowerText === "/plan" || lowerText === "/plan today" || lowerText === "/plan tomorrow") {
     const user = await getOrCreateUser(chatId);
-
-    const useToday = lowerText.includes("today");
-    const useTomorrow = lowerText.includes("tomorrow");
-
     let taskDate, label;
-
-    if (useToday) {
+    if (lowerText.includes("today")) {
       taskDate = getUserDate(user.timezone_offset);
       label = "today";
-    } else if (useTomorrow) {
+    } else if (lowerText.includes("tomorrow")) {
       taskDate = getUserTomorrowDate(user.timezone_offset);
       label = "tomorrow";
     } else {
       ({ date: taskDate, label } = getActiveDate(user.timezone_offset));
     }
-
     const tasks = await getTasksForDate(user.id, taskDate);
     if (tasks.length === 0) {
       await sendMessage(chatId, `📭 No tasks planned for ${label}.`);
@@ -266,6 +250,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
+  // /edit
   if (lowerText === "/edit") {
     const user = await getOrCreateUser(chatId);
     const { date: taskDate } = getActiveDate(user.timezone_offset);
@@ -285,8 +270,9 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
+  // edit <number> <time> <task>
   if (lowerText.startsWith("edit ")) {
-    const parts = text.split(" "); // FIXED: Use original case for task name
+    const parts = text.split(" ");
     if (parts.length < 4) { await sendMessage(chatId, "❌ Invalid edit format."); return res.sendStatus(200); }
     const index = parseInt(parts[1], 10) - 1;
     const time = parts[2];
@@ -299,7 +285,7 @@ app.post("/webhook", async (req, res) => {
     const { date: taskDate } = getActiveDate(user.timezone_offset);
     let cached = lastPlans.get(chatId);
     let plan = (cached && cached.date === taskDate) ? cached.tasks : null;
-    if (!plan || !plan[index]) {
+    if (!plan) {
       plan = await getTasksForDate(user.id, taskDate);
       lastPlans.set(chatId, { date: taskDate, tasks: plan });
     }
@@ -312,6 +298,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
+  // /delete
   if (lowerText === "/delete") {
     const user = await getOrCreateUser(chatId);
     const { date: taskDate } = getActiveDate(user.timezone_offset);
@@ -329,6 +316,7 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
+  // delete <number>
   if (lowerText.startsWith("delete ")) {
     const parts = text.split(" ");
     const index = parseInt(parts[1], 10) - 1;
@@ -337,7 +325,7 @@ app.post("/webhook", async (req, res) => {
     const { date: taskDate } = getActiveDate(user.timezone_offset);
     let cached = lastPlans.get(chatId);
     let plan = (cached && cached.date === taskDate) ? cached.tasks : null;
-    if (!plan || !plan[index]) {
+    if (!plan) {
       plan = await getTasksForDate(user.id, taskDate);
       lastPlans.set(chatId, { date: taskDate, tasks: plan });
     }
@@ -349,10 +337,11 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  if (lowerText.startsWith("/doing ") || lowerText.startsWith("doing ")) {
-    const response = lowerText.startsWith("/doing ")
-      ? text.slice(7).trim()  // FIXED: Use original case
-      : text.slice(6).trim();
+  // /doing or doing — FIX: use subquery instead of ORDER BY + LIMIT in UPDATE
+  if (lowerText.startsWith("/doing") || lowerText.startsWith("doing")) {
+    const response = lowerText.startsWith("/doing")
+      ? text.slice(6).trim()
+      : text.slice(5).trim();
 
     if (!response) {
       await sendMessage(chatId, "❓ Tell me what you're doing.\nExample: doing dog walk");
@@ -363,15 +352,20 @@ app.post("/webhook", async (req, res) => {
     const userDate = getUserDate(user.timezone_offset);
     const nowTime = getUserTime(user.timezone_offset);
 
+    // FIX: PostgreSQL doesn't support ORDER BY + LIMIT directly in UPDATE.
+    // Use a subquery to find the target row first.
     const result = await pool.query(
       `UPDATE tasks
        SET user_response = $1, responded_at = NOW()
-       WHERE user_id = $2
-         AND task_date = $3
-         AND task_time <= $4
-         AND user_response IS NULL
-       ORDER BY task_time DESC
-       LIMIT 1
+       WHERE id = (
+         SELECT id FROM tasks
+         WHERE user_id = $2
+           AND task_date = $3
+           AND task_time <= $4
+           AND user_response IS NULL
+         ORDER BY task_time DESC
+         LIMIT 1
+       )
        RETURNING id`,
       [response, user.id, userDate, nowTime]
     );
@@ -382,12 +376,13 @@ app.post("/webhook", async (req, res) => {
         ? "⚠️ No matching task found for this time."
         : "✍️ Noted."
     );
-
     return res.sendStatus(200);
   }
 
+  // Ignore unknown slash commands
   if (text.startsWith("/")) return res.sendStatus(200);
 
+  // Task input (plain text lines like "07:00 Gym")
   const tasks = parseTasks(text);
   if (tasks.length === 0) {
     await sendMessage(chatId, "❌ Format invalid.\nUse:\n07:00 Gym\n10:00 Study Go");
@@ -416,11 +411,9 @@ app.post("/cron/morning-start", async (req, res) => {
     for (const row of users.rows) {
       try {
         const userDate = getUserDate(row.timezone_offset);
-        // FIXED: Pass timezone to alreadySentToday
         if (await alreadySentToday(row.id, 'morning_start', row.timezone_offset)) continue;
         await markSentToday(row.id, 'morning_start', userDate);
         const tasks = await getTasksForDate(row.id, userDate);
-        // FIXED: Pass timezone to reserveAIQuota
         if (!(await reserveAIQuota(row.id, row.timezone_offset))) {
           await sendMessage(row.chat_id, `🌅 Good morning!\n\nYou have ${tasks.length} tasks today. Use /plan to see them.`);
           continue;
@@ -469,6 +462,8 @@ app.post("/cron/plan-reminder", async (req, res) => {
 
 //--------------
 // CRON: Task reminders
+// FIX: Changed window from [+5, +20] to [-2, +3] so tasks at the current time are caught.
+// A future-only window means a task at exactly now is never reminded about.
 //--------------
 app.post("/cron/task-reminders", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -487,7 +482,8 @@ app.post("/cron/task-reminders", async (req, res) => {
                    BETWEEN $3 AND $4
              FOR UPDATE SKIP LOCKED
            ) RETURNING id, task_time, task_name`,
-          [user.id, userDate, userMinutes + 5, userMinutes + 20]
+          // FIX: was [userMinutes + 5, userMinutes + 20] — missed tasks at current time
+          [user.id, userDate, userMinutes - 2, userMinutes + 3]
         );
         for (const task of result.rows) {
           await sendMessage(user.chat_id,
@@ -502,6 +498,8 @@ app.post("/cron/task-reminders", async (req, res) => {
 
 //--------------
 // CRON: Angry/Praise check
+// FIX: Changed window from [-7, +7] to [-25, -3] so we check tasks AFTER their time has passed,
+// giving the user a chance to reply before the angry check fires.
 //--------------
 app.post("/cron/angry-check", async (req, res) => {
   if (req.headers["x-cron-secret"] !== CRON_SECRET) return res.sendStatus(401);
@@ -517,7 +515,9 @@ app.post("/cron/angry-check", async (req, res) => {
              AND t.praised = false AND t.scolded = false AND t.reminder_sent = true
              AND (EXTRACT(HOUR FROM task_time::time)*60 + EXTRACT(MINUTE FROM task_time::time))
                  BETWEEN $3 AND $4`,
-          [user.id, userDate, userMinutes - 7, userMinutes + 7]
+          // FIX: was [-7, +7] which fired before user could reply.
+          // Now checks tasks from 3–25 min ago, giving user time to respond after reminder.
+          [user.id, userDate, userMinutes - 25, userMinutes - 3]
         );
         for (const row of result.rows) {
           try {
@@ -641,6 +641,8 @@ app.post("/cron/daily-reset", async (req, res) => {
   } catch (err) { console.error("Daily reset error:", err); res.status(500).json({ ok: false }); }
 });
 
+// Keep-alive endpoint (ping this every 10 min from GitHub Actions to prevent Render from sleeping)
 app.get("/", (_, res) => res.send("Bot is running"));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Server running on port", PORT));

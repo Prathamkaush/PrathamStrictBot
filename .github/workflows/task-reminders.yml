@@ -12,4 +12,7 @@ jobs:
       - name: Call task reminder cron
         run: |
           curl -X POST https://prathamstrictbot.onrender.com/cron/task-reminders \
-          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
+          -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+          --max-time 25 \
+          --retry 2 \
+          --retry-delay 3
